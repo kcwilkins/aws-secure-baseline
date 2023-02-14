@@ -1,0 +1,50 @@
+#/usr/bin/env bash
+
+# todo
+# verify aws is available
+# verify jq is installed
+# verify profile is created, or provide url for information on creating
+
+profile="terraform_iam_user"
+
+export REGIONS=$(aws --profile $profile ec2 describe-regions | jq -r ".Regions[].RegionName")
+
+for region in $REGIONS; do
+    # list vpcs
+    echo $region
+    aws --profile $profile --region=$region ec2 describe-vpcs | jq ".Vpcs[]|{is_default: .IsDefault, cidr: .CidrBlock, id: .VpcId} | select(.is_default)"
+done
+
+read -p "Are you sure? " -n 1 -r
+echo    # (optional) move to a new line
+if [[ $REPLY =~ ^[Yy]$ ]]
+then
+    for region in $REGIONS ; do
+        echo "Killing $region"
+        # list vpcs
+        export IDs=$(aws --profile $profile --region=$region ec2 describe-vpcs | jq -r ".Vpcs[]|{is_default: .IsDefault, id: .VpcId} | select(.is_default) | .id")
+        for id in "$IDs" ; do
+            if [ -z "$id" ] ; then
+                continue
+            fi
+
+            # kill igws
+            for igw in `aws --profile $profile --region=$region ec2 describe-internet-gateways | jq -r ".InternetGateways[] | {id: .InternetGatewayId, vpc: .Attachments[0].VpcId} | select(.vpc == \"$id\") | .id"` ; do
+                echo "Killing igw $region $id $igw"
+                aws --profile $profile --region=$region ec2 detach-internet-gateway --internet-gateway-id=$igw --vpc-id=$id
+                aws --profile $profile --region=$region ec2 delete-internet-gateway --internet-gateway-id=$igw
+            done
+
+            # kill subnets
+            for sub in `aws --profile $profile --region=$region ec2 describe-subnets | jq -r ".Subnets[] | {id: .SubnetId, vpc: .VpcId} | select(.vpc == \"$id\") | .id"` ; do
+                echo "Killing subnet $region $id $sub"
+                aws --profile $profile --region=$region ec2 delete-subnet --subnet-id=$sub
+            done
+
+            echo "Killing vpc $region $id"
+            aws --profile $profile --region=$region ec2 delete-vpc --vpc-id=$id
+        done
+    done
+
+fi
+
